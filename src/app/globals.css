@@ -1,26 +1,122 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-ink: #090d16;
+  --color-card: #141a28;
+  --color-card-2: #1c2436;
+  --color-line: rgb(243 239 230 / 0.1);
+  --color-cream: #f4f0e6;
+  --color-muted: #a7b0c0;
+  --color-amber: #f0b429;
+  --color-amber-2: #ffd78a;
+  --color-late: #f0a06a;
+  --color-early: #8fd0b0;
+  --color-sky: #9eb7ee;
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: dark;
+  background: #090d16;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100dvh;
+  color: var(--color-cream);
+  background:
+    radial-gradient(900px 420px at 50% -12%, rgb(240 180 41 / 0.16), transparent 60%),
+    radial-gradient(700px 420px at 110% 110%, rgb(120 150 210 / 0.12), transparent 55%),
+    var(--color-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-amber);
+  outline-offset: 3px;
+}
+
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  background: #101624;
+  font-family: inherit;
+}
+
+.leaflet-bar {
+  border: 0;
+  box-shadow: none;
+}
+
+.leaflet-container .leaflet-bar a,
+.leaflet-container .leaflet-bar a:hover {
+  background: #1c2436;
+  color: #f4f0e6;
+  border: 1px solid rgb(243 239 230 / 0.12);
+  width: 36px;
+  height: 36px;
+  line-height: 34px;
+  font-size: 18px;
+}
+
+.leaflet-container .leaflet-bar a:hover {
+  background: #273049;
+}
+
+.leaflet-container .leaflet-control-attribution {
+  background: rgb(9 13 22 / 0.72);
+  color: #a7b0c0;
+  font-size: 10px;
+  max-width: 70%;
+}
+
+.leaflet-control-attribution a {
+  color: #d5dbe6;
+}
+
+.map-frame {
+  overflow: hidden;
+  border-radius: 1.5rem;
+  border: 1px solid var(--color-line);
+  background: #101624;
+}
+
+.map-tag-wrap {
+  background: transparent;
+  border: 0;
+}
+
+.map-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #141a28;
+  color: #f4f0e6;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  box-shadow: 0 6px 16px rgb(0 0 0 / 0.35);
+}
+
+.map-tag-origin {
+  border: 1px solid rgb(240 180 41 / 0.85);
+}
+
+.map-tag-dest {
+  border: 1px solid rgb(158 183 238 / 0.95);
+}
+
+.map-plane {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: #090d16;
+  background: #f0b429;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1;
+  box-shadow: 0 0 0 4px rgb(240 180 41 / 0.25);
 }
