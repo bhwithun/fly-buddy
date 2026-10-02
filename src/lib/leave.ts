@@ -40,6 +40,46 @@ export function planLeave(input: {
   };
 }
 
+export const EARLY_BUFFERS = [60, 90, 120, 180] as const;
+export type EarlyBuffer = (typeof EARLY_BUFFERS)[number];
+
+export function normalizeEarly(value: number): EarlyBuffer {
+  return EARLY_BUFFERS.includes(value as EarlyBuffer) ? (value as EarlyBuffer) : 120;
+}
+
+export function formatLead(minutes: number) {
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return hours === 1 ? "1 hr" : `${hours} hr`;
+  }
+  const hours = minutes / 60;
+  return `${hours} hr`;
+}
+
+export function planDropoff(input: {
+  departUnix: number;
+  driveSeconds: number;
+  earlyMinutes: number;
+  nowUnix?: number;
+}): LeavePlan {
+  const nowUnix = input.nowUnix ?? Math.floor(Date.now() / 1000);
+  const driveSeconds = Math.max(0, Math.round(input.driveSeconds));
+  const bufferMinutes = normalizeEarly(input.earlyMinutes);
+  const readyUnix = input.departUnix - bufferMinutes * 60;
+  const leaveUnix = readyUnix - driveSeconds;
+  const leaveNow = leaveUnix <= nowUnix;
+  const lateBySeconds = leaveNow ? Math.max(0, nowUnix + driveSeconds - readyUnix) : 0;
+  return {
+    arrivalUnix: input.departUnix,
+    readyUnix,
+    leaveUnix,
+    driveSeconds,
+    bufferMinutes,
+    leaveNow,
+    lateBySeconds,
+  };
+}
+
 export function arrivalInstant(times: {
   actual: number | null;
   estimated: number | null;

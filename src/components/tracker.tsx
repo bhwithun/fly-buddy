@@ -6,8 +6,8 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Fo
 import { cleanIdent } from "@/lib/flightaware";
 import { formatAgo, formatClock, formatDay, formatFeet, formatMiles, formatSpan, formatUntil, timeZoneName } from "@/lib/format";
 import { fraunces } from "@/lib/fonts";
-import { MEET_BUFFERS, arrivalInstant, normalizeBuffer, planLeave, type MeetBuffer } from "@/lib/leave";
-import { ADDRESS_COOKIE, BUFFER_COOKIE, FLIGHT_COOKIE, readCookie, writeCookie } from "@/lib/prefs";
+import { EARLY_BUFFERS, MEET_BUFFERS, arrivalInstant, formatLead, normalizeBuffer, normalizeEarly, planDropoff, planLeave, type EarlyBuffer, type MeetBuffer } from "@/lib/leave";
+import { ADDRESS_COOKIE, BUFFER_COOKIE, EARLY_COOKIE, FLIGHT_COOKIE, MODE_COOKIE, readCookie, writeCookie } from "@/lib/prefs";
 import type { DriveEstimate, FlightSnapshot } from "@/lib/types";
 
 const REFRESH_MS = 5 * 60 * 1000;
@@ -66,19 +66,32 @@ async function readError(response: Response, fallback: string) {
   }
 }
 
+type TripMode = "pickup" | "dropoff";
+
+function tripMode(value: string | null | undefined): TripMode {
+  return value === "dropoff" ? "dropoff" : "pickup";
+}
+
 export function Tracker({
   initialFlight,
   initialAddress,
   initialBuffer,
+  initialEarly,
+  initialMode,
 }: {
   initialFlight: string;
   initialAddress: string;
   initialBuffer: string;
+  initialEarly: string;
+  initialMode: TripMode;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const rememberedFlight = cleanIdent(searchParams.get("flight") || initialFlight);
+  const startingMode = tripMode(searchParams.get("mode") || initialMode);
   const [query, setQuery] = useState(rememberedFlight);
+  const [purpose, setPurpose] = useState<TripMode>(startingMode);
+  const purposeRef = useRef<TripMode>(startingMode);
   const [flight, setFlight] = useState<FlightSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshNote, setRefreshNote] = useState<string | null>(null);
@@ -87,6 +100,7 @@ export function Tracker({
   const [now, setNow] = useState(() => Date.now());
   const [savedAddress, setSavedAddress] = useCookie(ADDRESS_COOKIE, initialAddress);
   const [bufferValue, setBufferValue] = useCookie(BUFFER_COOKIE, initialBuffer);
+  const [earlyValue, setEarlyValue] = useCookie(EARLY_COOKIE, initialEarly);
   const [draft, setDraft] = useState<string | null>(null);
   const [addressError, setAddressError] = useState<string | null>(null);
   const addressField = draft ?? savedAddress;
@@ -99,6 +113,7 @@ export function Tracker({
   const initialIdent = useRef(rememberedFlight);
 
   const buffer = normalizeBuffer(Number(bufferValue));
+  const early = normalizeEarly(Number(earlyValue));
 
   const loadFlight = useCallback(
     async (ident: string, mode: "search" | "poll" = "search") => {
@@ -123,7 +138,8 @@ export function Tracker({
         setUpdatedAt(Date.now());
         setRefreshNote(null);
         writeCookie(FLIGHT_COOKIE, clean);
-        router.replace(`/?flight=${clean}`, { scroll: false });
+        writeCookie(MODE_COOKIE, purposeRef.current);
+        router.replace(`/?flight=${clean}&mode=${purposeRef.current}`, { scroll: false });
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : "Couldn't look up that flight.";
         if (quiet) setRefreshNote(message);
@@ -180,11 +196,12 @@ export function Tracker({
     return () => window.clearInterval(id);
   }, []);
 
-  const destLat = flight?.destination.lat ?? null;
-  const destLon = flight?.destination.lon ?? null;
+  const driveAirport = purpose === "dropoff" ? flight?.origin : flight?.destination;
+  const destLat = driveAirport?.lat ?? null;
+  const destLon = driveAirport?.lon ?? null;
   const driveKey =
     savedAddress.trim() && destLat != null && destLon != null
-      ? `${savedAddress.trim()}|${destLat}|${destLon}|${driveNonce}`
+      ? `${purpose}|${savedAddress.trim()}|${destLat}|${destLon}|${driveNonce}`
       : null;
   const driveCurrent = driveResult != null && driveResult.key === driveKey;
   const driveSameTrip =
@@ -222,8 +239,19 @@ export function Tracker({
     return () => controller.abort();
   }, [destLat, destLon, driveKey, savedAddress]);
 
-  function onTrack(event: FormEvent<HTMLFormElement>) {
+  function onChoose(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const submitter = (event.nativeEvent as SubmitEvent).submitter;
+    const selected = submitter instanceof HTMLButtonElement ? submitter.value : "";
+    const next = selected === "dropoff" ? "dropoff" : "pickup";
+    purposeRef.current = next;
+    setPurpose(next);
+    const clean = cleanIdent(query);
+    if (flight && clean === flight.ident) {
+      writeCookie(MODE_COOKIE, next);
+      router.replace(`/?flight=${clean}&mode=${next}`, { scroll: false });
+      return;
+    }
     void loadFlight(query);
   }
 
@@ -263,7 +291,7 @@ export function Tracker({
       </header>
 
       <div className="space-y-2">
-        <form onSubmit={onTrack} className="space-y-2">
+        <form onSubmit={onChoose} className="space-y-2">
           <label htmlFor="flight" className="px-1 text-sm text-muted">
             Flight number
           </label>
@@ -288,19 +316,33 @@ export function Tracker({
               >
                 Clear
               </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={loading}
-                className="h-12 shrink-0 rounded-2xl bg-amber px-5 text-base font-semibold text-ink disabled:opacity-60"
-              >
-                {loading ? "Looking…" : "Track"}
-              </button>
-            )}
+            ) : null}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <ModeButton
+              purpose="pickup"
+              active={(!flight && !loading) || purpose === "pickup"}
+              pressed={Boolean(flight) && purpose === "pickup"}
+              disabled={loading}
+            >
+              {loading && purpose === "pickup" ? "Looking…" : "Pickup"}
+            </ModeButton>
+            <ModeButton
+              purpose="dropoff"
+              active={(!flight && !loading) || purpose === "dropoff"}
+              pressed={Boolean(flight) && purpose === "dropoff"}
+              disabled={loading}
+            >
+              {loading && purpose === "dropoff" ? "Looking…" : "Dropoff"}
+            </ModeButton>
           </div>
         </form>
         {flight ? (
-          <p className="px-1 text-sm text-muted">Arrival and leave-by update every 5 minutes.</p>
+          <p className="px-1 text-sm text-muted">
+            {purpose === "dropoff"
+              ? "Departure and leave-by update every 5 minutes."
+              : "Arrival and leave-by update every 5 minutes."}
+          </p>
         ) : null}
       </div>
 
@@ -312,19 +354,34 @@ export function Tracker({
 
       {flight ? (
         <div className="flex flex-col gap-6" aria-live="polite">
-          <FlightSummary flight={flight} now={now} />
-          <Pickup
-            flight={flight}
-            now={now}
-            buffer={buffer}
-            onBuffer={(minutes) => setBufferValue(String(minutes))}
-            draft={addressField}
-            onDraft={setDraft}
-            onAddress={onAddress}
-            drive={drive}
-            driveError={addressError ?? driveError}
-            driveLoading={driveLoading}
-          />
+          <FlightSummary flight={flight} now={now} purpose={purpose} />
+          {purpose === "dropoff" ? (
+            <Dropoff
+              flight={flight}
+              now={now}
+              early={early}
+              onEarly={(minutes) => setEarlyValue(String(minutes))}
+              draft={addressField}
+              onDraft={setDraft}
+              onAddress={onAddress}
+              drive={drive}
+              driveError={addressError ?? driveError}
+              driveLoading={driveLoading}
+            />
+          ) : (
+            <Pickup
+              flight={flight}
+              now={now}
+              buffer={buffer}
+              onBuffer={(minutes) => setBufferValue(String(minutes))}
+              draft={addressField}
+              onDraft={setDraft}
+              onAddress={onAddress}
+              drive={drive}
+              driveError={addressError ?? driveError}
+              driveLoading={driveLoading}
+            />
+          )}
           <RouteMap flight={flight} />
           <div className="flex items-center justify-between gap-3 px-1 text-xs text-muted">
             <p className="min-w-0 truncate">
@@ -344,7 +401,7 @@ export function Tracker({
       ) : (
         !error && (
           <p className="px-1 text-sm leading-6 text-muted">
-            Type a flight number. I&apos;ll show the airports, the arrival gate, and when you should head out.
+            Type a flight number. Pickup times the drive to meet an arrival. Dropoff times the drive to catch a departure.
           </p>
         )
       )}
@@ -358,6 +415,35 @@ function PlaneMark() {
       <path d="M4 22h24" stroke="#f0b429" strokeWidth="1.8" strokeLinecap="round" />
       <path d="M6 19.5 16 6l10 13.5h-5.2L16 13.2 11.2 19.5Z" fill="#f4f0e6" />
     </svg>
+  );
+}
+
+function ModeButton({
+  purpose,
+  active,
+  pressed,
+  disabled,
+  children,
+}: {
+  purpose: TripMode;
+  active: boolean;
+  pressed: boolean;
+  disabled: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="submit"
+      name="purpose"
+      value={purpose}
+      disabled={disabled}
+      aria-pressed={pressed}
+      className={`h-12 rounded-2xl text-base font-semibold disabled:opacity-60 ${
+        active ? "bg-amber text-ink" : "border border-line bg-card-2 text-cream"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -382,12 +468,7 @@ function Chip({
   );
 }
 
-function FlightSummary({ flight, now }: { flight: FlightSnapshot; now: number }) {
-  const zone = flight.destination.timeZone;
-  const when = arrivalInstant(flight.arrival);
-  const airportClock = when ? formatClock(when, zone) : null;
-  const localClock = when ? formatClock(when) : null;
-  const zoneLabel = when ? timeZoneName(when, zone) : "";
+function FlightSummary({ flight, now, purpose }: { flight: FlightSnapshot; now: number; purpose: TripMode }) {
   const departAt = flight.departure.estimated ?? flight.departure.scheduled;
   const waitingToLeave =
     departAt != null &&
@@ -401,9 +482,6 @@ function FlightSummary({ flight, now }: { flight: FlightSnapshot; now: number })
       : flight.status === "arrived"
         ? "early"
         : "quiet";
-  const headline = flight.status === "arrived" ? "Arrived" : flight.arrival.actual ? "Arrived" : "Arrives";
-  const speed = flight.position?.groundspeedKt;
-  const altitude = flight.position?.altitudeFt;
 
   return (
     <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5 shadow-[0_20px_50px_rgb(0_0_0/0.25)]">
@@ -423,12 +501,33 @@ function FlightSummary({ flight, now }: { flight: FlightSnapshot; now: number })
         <Airport code={flight.destination.code} name={flight.destination.name} place={flight.destination.location} align="end" />
       </div>
 
-      {waitingToLeave && departAt != null ? (
-        <DepartureWait flight={flight} departAt={departAt} now={now} />
-      ) : hasDeparted(flight) && flight.aircraft ? (
-        <p className="mt-3 text-sm text-muted">{flight.aircraft}</p>
-      ) : null}
+      {purpose === "dropoff" ? (
+        <DropoffFlight flight={flight} now={now} departAt={departAt} waitingToLeave={waitingToLeave} />
+      ) : (
+        <>
+          {waitingToLeave && departAt != null ? (
+            <DepartureWait flight={flight} departAt={departAt} now={now} />
+          ) : hasDeparted(flight) && flight.aircraft ? (
+            <p className="mt-3 text-sm text-muted">{flight.aircraft}</p>
+          ) : null}
+          <ArrivalBlock flight={flight} now={now} />
+        </>
+      )}
+    </section>
+  );
+}
 
+function ArrivalBlock({ flight, now }: { flight: FlightSnapshot; now: number }) {
+  const zone = flight.destination.timeZone;
+  const when = arrivalInstant(flight.arrival);
+  const airportClock = when ? formatClock(when, zone) : null;
+  const localClock = when ? formatClock(when) : null;
+  const zoneLabel = when ? timeZoneName(when, zone) : "";
+  const headline = flight.status === "arrived" ? "Arrived" : flight.arrival.actual ? "Arrived" : "Arrives";
+  const speed = flight.position?.groundspeedKt;
+  const altitude = flight.position?.altitudeFt;
+  return (
+    <>
       <div className="mt-5 border-t border-line pt-5">
         <p className="text-sm text-muted">{headline}{flight.arrivalIsGate ? "" : " (runway)"}</p>
         <p className={`${fraunces.className} mt-1 text-5xl leading-none tracking-tight text-cream`}>
@@ -468,7 +567,51 @@ function FlightSummary({ flight, now }: { flight: FlightSnapshot; now: number })
         <Info label="Terminal" value={flight.destination.terminal} detail={flight.destination.terminalName} />
         <Info label="Gate" value={flight.destination.gate} />
       </dl>
-    </section>
+    </>
+  );
+}
+
+function DropoffFlight({
+  flight,
+  now,
+  departAt,
+  waitingToLeave,
+}: {
+  flight: FlightSnapshot;
+  now: number;
+  departAt: number | null;
+  waitingToLeave: boolean;
+}) {
+  const gone = hasDeparted(flight);
+  const arrival = arrivalInstant(flight.arrival);
+  return (
+    <>
+      {gone ? (
+        <div className="mt-5">
+          <p className="text-sm text-muted">Already departed</p>
+          <p className={`${fraunces.className} mt-1 text-4xl leading-none text-cream`}>
+            {flight.departure.actual ? formatClock(flight.departure.actual, flight.origin.timeZone) : "Left"}
+          </p>
+          {flight.aircraft ? <p className="mt-2 text-sm text-muted">{flight.aircraft}</p> : null}
+        </div>
+      ) : waitingToLeave && departAt != null ? (
+        <DepartureWait flight={flight} departAt={departAt} now={now} prominent />
+      ) : (
+        <p className="mt-5 text-sm text-muted">Departure time isn&apos;t posted yet.</p>
+      )}
+
+      <dl className="mt-5 grid grid-cols-2 gap-3">
+        <Info label="Depart terminal" value={flight.origin.terminal} detail={flight.origin.terminalName} />
+        <Info label="Depart gate" value={flight.origin.gate} />
+      </dl>
+
+      {arrival != null ? (
+        <p className="mt-4 text-sm text-muted">
+          Lands at {flight.destination.code} {formatClock(arrival, flight.destination.timeZone)}{" "}
+          {timeZoneName(arrival, flight.destination.timeZone)}
+        </p>
+      ) : null}
+    </>
   );
 }
 
@@ -481,15 +624,25 @@ function hasDeparted(flight: FlightSnapshot) {
   );
 }
 
-function DepartureWait({ flight, departAt, now }: { flight: FlightSnapshot; departAt: number; now: number }) {
+function DepartureWait({
+  flight,
+  departAt,
+  now,
+  prominent = false,
+}: {
+  flight: FlightSnapshot;
+  departAt: number;
+  now: number;
+  prominent?: boolean;
+}) {
   const zone = flight.origin.timeZone;
   const remainingMs = departAt * 1000 - now;
   const due = remainingMs < -30_000;
   const soon = Math.abs(remainingMs) < 30_000;
   return (
-    <div className="mt-5 rounded-2xl bg-card-2 px-4 py-4">
+    <div className={prominent ? "mt-5" : "mt-5 rounded-2xl bg-card-2 px-4 py-4"}>
       <p className="text-sm text-muted">{due ? "Departure estimate passed" : "Until departure"}</p>
-      <p className={`${fraunces.className} mt-1 text-4xl leading-none tracking-tight text-cream`}>
+      <p className={`${fraunces.className} mt-1 leading-none tracking-tight text-cream ${prominent ? "text-5xl" : "text-4xl"}`}>
         {soon ? "Now" : formatSpan(Math.abs(remainingMs) / 1000)}
       </p>
       <p className="mt-2 text-sm text-muted">
@@ -534,7 +687,8 @@ function Info({ label, value, detail }: { label: string; value: string | null; d
 }
 
 function tripOf(key: string) {
-  return key.split("|").slice(0, 3).join("|");
+  const parts = key.split("|");
+  return parts.slice(0, -1).join("|");
 }
 
 function Pickup({
@@ -626,6 +780,138 @@ function Pickup({
         <p className="mt-4 text-sm text-muted">I need an arrival time before I can say when to leave.</p>
       ) : null}
 
+      <AddressForm
+        draft={draft}
+        onDraft={onDraft}
+        onAddress={onAddress}
+        driveLoading={driveLoading}
+        hasDrive={drive != null}
+        driveError={driveError}
+      />
+    </section>
+  );
+}
+
+function Dropoff({
+  flight,
+  now,
+  early,
+  onEarly,
+  draft,
+  onDraft,
+  onAddress,
+  drive,
+  driveError,
+  driveLoading,
+}: {
+  flight: FlightSnapshot;
+  now: number;
+  early: EarlyBuffer;
+  onEarly: (minutes: EarlyBuffer) => void;
+  draft: string;
+  onDraft: (value: string) => void;
+  onAddress: (event: FormEvent<HTMLFormElement>) => void;
+  drive: DriveEstimate | null;
+  driveError: string | null;
+  driveLoading: boolean;
+}) {
+  const departAt = flight.departure.estimated ?? flight.departure.scheduled;
+  const gone = hasDeparted(flight) || flight.status === "cancelled" || flight.status === "diverted";
+  const plan = !gone && departAt != null && drive
+    ? planDropoff({
+        departUnix: departAt,
+        driveSeconds: drive.durationSeconds,
+        earlyMinutes: early,
+        nowUnix: Math.floor(now / 1000),
+      })
+    : null;
+  const airport = flight.origin.code;
+  const zone = flight.origin.timeZone;
+
+  return (
+    <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5">
+      <h2 className="text-sm font-medium text-cream">Dropoff</h2>
+      <p className="mt-1 text-sm leading-5 text-muted">
+        A typical drive to {airport}, timed so you arrive before departure. This is not live traffic.
+      </p>
+
+      <fieldset className="mt-4">
+        <legend className="text-xs text-muted">Arrive before departure</legend>
+        <div className="mt-2 grid grid-cols-4 gap-2">
+          {EARLY_BUFFERS.map((minutes) => (
+            <label
+              key={minutes}
+              className={`flex h-10 items-center justify-center rounded-xl border text-sm ${
+                early === minutes ? "border-amber bg-amber/15 text-amber-2" : "border-line bg-card-2 text-muted"
+              }`}
+            >
+              <input
+                type="radio"
+                name="early-buffer"
+                value={minutes}
+                checked={early === minutes}
+                onChange={() => onEarly(minutes)}
+                className="sr-only"
+              />
+              {formatLead(minutes)}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      {flight.status === "cancelled" ? (
+        <p className="mt-4 text-sm text-late">This flight is cancelled, so there is no drop-off time.</p>
+      ) : flight.status === "diverted" || hasDeparted(flight) ? (
+        <p className="mt-4 text-sm text-muted">This flight has already left, so there is no drop-off time.</p>
+      ) : plan && drive && departAt != null ? (
+        <div className="mt-4">
+          <p className="text-sm text-muted">{plan.leaveNow ? "Leave now" : "Leave by"}</p>
+          <p className={`${fraunces.className} mt-1 text-4xl leading-none text-amber-2`}>
+            {plan.leaveNow ? "Now" : formatClock(plan.leaveUnix)}
+          </p>
+          <p className="mt-2 text-sm leading-5 text-muted">
+            {formatSpan(drive.durationSeconds)} · {formatMiles(drive.distanceMeters)} to {airport}.
+            {plan.leaveNow && now / 1000 + plan.driveSeconds > departAt
+              ? " The flight leaves before you would get there."
+              : plan.leaveNow
+                ? ` You'll arrive about ${formatSpan(plan.lateBySeconds)} after the ${formatLead(early)} early target.`
+                : ` Be at the airport about ${formatLead(early)} before the ${formatClock(departAt, zone)} departure.`}
+          </p>
+          <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">From {drive.label}</p>
+        </div>
+      ) : departAt == null ? (
+        <p className="mt-4 text-sm text-muted">I need a departure time before I can say when to leave.</p>
+      ) : null}
+
+      <AddressForm
+        draft={draft}
+        onDraft={onDraft}
+        onAddress={onAddress}
+        driveLoading={driveLoading}
+        hasDrive={drive != null}
+        driveError={driveError}
+      />
+    </section>
+  );
+}
+
+function AddressForm({
+  draft,
+  onDraft,
+  onAddress,
+  driveLoading,
+  hasDrive,
+  driveError,
+}: {
+  draft: string;
+  onDraft: (value: string) => void;
+  onAddress: (event: FormEvent<HTMLFormElement>) => void;
+  driveLoading: boolean;
+  hasDrive: boolean;
+  driveError: string | null;
+}) {
+  return (
+    <>
       <form onSubmit={onAddress} className="mt-4 space-y-2">
         <label htmlFor="address" className="px-1 text-xs text-muted">
           Starting address
@@ -645,7 +931,7 @@ function Pickup({
           disabled={driveLoading}
           className="h-11 w-full rounded-2xl bg-cream text-sm font-semibold text-ink disabled:opacity-60"
         >
-          {driveLoading ? "Estimating…" : drive ? "Update drive" : "Estimate drive"}
+          {driveLoading ? "Estimating…" : hasDrive ? "Update drive" : "Estimate drive"}
         </button>
       </form>
       {driveError ? (
@@ -653,6 +939,6 @@ function Pickup({
           {driveError}
         </p>
       ) : null}
-    </section>
+    </>
   );
 }

@@ -1,6 +1,8 @@
 export const FLIGHT_COOKIE = "fly-buddy-flight";
 export const ADDRESS_COOKIE = "fly-buddy-address";
 export const BUFFER_COOKIE = "fly-buddy-buffer";
+export const EARLY_COOKIE = "fly-buddy-early";
+export const MODE_COOKIE = "fly-buddy-mode";
 
 const YEAR_SECONDS = 60 * 60 * 24 * 365;
 
