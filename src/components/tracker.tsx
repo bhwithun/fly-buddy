@@ -69,7 +69,6 @@ const PICKUP_TABS: { id: DetailTab; label: string }[] = [
 const DROPOFF_TABS: { id: DetailTab; label: string }[] = [
   { id: "flight", label: "Flight" },
   { id: "departure", label: "Departure" },
-  { id: "arrival", label: "Arrival" },
   { id: "dropoff", label: "Dropoff" },
 ];
 
@@ -298,11 +297,13 @@ export function Tracker({
       </header>
 
       <div className="space-y-2">
-        <form onSubmit={onChoose} className="space-y-2">
-          <label htmlFor="flight" className="px-1 text-sm text-muted">
-            Flight number
-          </label>
-          <div className="flex gap-2">
+        {flight || loading ? (
+          <TrackedFlight purpose={purpose} ident={cleanIdent(flight?.ident || query)} onClear={onClear} />
+        ) : (
+          <form onSubmit={onChoose} className="space-y-2">
+            <label htmlFor="flight" className="px-1 text-sm text-muted">
+              Flight number
+            </label>
             <input
               id="flight"
               name="flight"
@@ -313,19 +314,8 @@ export function Tracker({
               autoCorrect="off"
               spellCheck={false}
               enterKeyHint="search"
-              className="h-12 min-w-0 flex-1 rounded-2xl border border-line bg-card px-4 text-base tracking-wide text-cream outline-none placeholder:text-muted/70"
+              className="h-12 w-full rounded-2xl border border-line bg-card px-4 text-base tracking-wide text-cream outline-none placeholder:text-muted/70"
             />
-            {flight || loading ? (
-              <button
-                type="button"
-                onClick={onClear}
-                className="h-12 shrink-0 rounded-2xl border border-line bg-card-2 px-5 text-base font-semibold text-cream"
-              >
-                Clear
-              </button>
-            ) : null}
-          </div>
-          {flight || loading ? null : (
             <div className="grid grid-cols-2 gap-2">
               <ModeButton purpose="pickup" disabled={loading}>
                 Pickup
@@ -334,8 +324,8 @@ export function Tracker({
                 Dropoff
               </ModeButton>
             </div>
-          )}
-        </form>
+          </form>
+        )}
         {loading && !flight ? <p className="px-1 text-sm text-muted">Looking up {cleanIdent(query)}…</p> : null}
         {flight ? (
           <p className="px-1 text-sm text-muted">
@@ -375,10 +365,16 @@ export function Tracker({
               ) : null}
             </DetailTabs>
           ) : (
-            <DetailTabs label="Dropoff" tabs={DROPOFF_TABS} tab={detailTab === "pickup" ? "flight" : detailTab} onTab={setDetailTab}>
-              {detailTab === "flight" || detailTab === "pickup" ? <FlightInfo flight={flight} /> : null}
+            <DetailTabs
+              label="Dropoff"
+              tabs={DROPOFF_TABS}
+              tab={detailTab === "pickup" || detailTab === "arrival" ? "flight" : detailTab}
+              onTab={setDetailTab}
+            >
+              {detailTab === "flight" || detailTab === "pickup" || detailTab === "arrival" ? (
+                <FlightInfo flight={flight} />
+              ) : null}
               {detailTab === "departure" ? <DropoffDeparture flight={flight} now={now} /> : null}
-              {detailTab === "arrival" ? <ArrivalPanel flight={flight} now={now} /> : null}
               {detailTab === "dropoff" ? (
                 <Dropoff
                   flight={flight}
@@ -418,6 +414,35 @@ export function Tracker({
         )
       )}
     </main>
+  );
+}
+
+function TrackedFlight({
+  purpose,
+  ident,
+  onClear,
+}: {
+  purpose: TripMode;
+  ident: string;
+  onClear: () => void;
+}) {
+  const prefix = purpose === "dropoff" ? "Dropoff for" : "Pickup for";
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-[1.75rem] border border-amber/40 bg-card px-4 py-4">
+      <h1 className="min-w-0">
+        <span className="block text-base font-semibold tracking-wide text-amber-2">{prefix}</span>
+        <span className={`${fraunces.className} mt-1 block truncate text-5xl leading-none tracking-wide text-cream`}>
+          {ident || "…"}
+        </span>
+      </h1>
+      <button
+        type="button"
+        onClick={onClear}
+        className="h-12 shrink-0 rounded-2xl border border-line bg-card-2 px-5 text-base font-semibold text-cream"
+      >
+        Clear
+      </button>
+    </div>
   );
 }
 
@@ -475,7 +500,11 @@ function DetailTabs({
 }) {
   return (
     <div>
-      <div role="tablist" aria-label={label} className="grid grid-cols-4 gap-1 rounded-2xl bg-card p-1">
+      <div
+        role="tablist"
+        aria-label={label}
+        className={`grid gap-1 rounded-2xl bg-card p-1 ${tabs.length === 3 ? "grid-cols-3" : "grid-cols-4"}`}
+      >
         {tabs.map((item) => {
           const selected = tab === item.id;
           return (
@@ -541,7 +570,7 @@ function FlightInfo({ flight }: { flight: FlightSnapshot }) {
     <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold tracking-wide text-cream">{flight.ident}</h1>
+          <p className="text-lg font-semibold tracking-wide text-cream">{flight.ident}</p>
           <p className="text-sm text-muted">{flight.friendlyName}</p>
         </div>
         <Chip tone={badge.tone}>{badge.label}</Chip>
