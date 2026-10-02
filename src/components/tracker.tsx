@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { cleanIdent } from "@/lib/flightaware";
@@ -12,6 +13,15 @@ import type { DriveEstimate, FlightSnapshot } from "@/lib/types";
 const REFRESH_MS = 5 * 60 * 1000;
 const LEGACY_ADDRESS_KEY = "fly-buddy.address";
 const LEGACY_BUFFER_KEY = "fly-buddy.buffer";
+
+function MapFallback() {
+  return <div className="map-frame h-64 animate-pulse sm:h-72" aria-hidden="true" />;
+}
+
+const RouteMap = dynamic(
+  () => import("@/components/route-map").then((mod) => mod.RouteMap),
+  { ssr: false, loading: MapFallback },
+);
 
 const storageListeners = new Set<() => void>();
 
@@ -57,19 +67,20 @@ async function readError(response: Response, fallback: string) {
 }
 
 type TripMode = "pickup" | "dropoff";
-type DetailTab = "flight" | "departure" | "arrival" | "pickup" | "dropoff";
+type DetailTab = "flight" | "departure" | "arrival" | "leave" | "route";
 
 const PICKUP_TABS: { id: DetailTab; label: string }[] = [
   { id: "flight", label: "Flight" },
-  { id: "departure", label: "Departure" },
+  { id: "departure", label: "Flight departure" },
   { id: "arrival", label: "Arrival" },
-  { id: "pickup", label: "Pickup" },
+  { id: "leave", label: "Leave by" },
+  { id: "route", label: "Route" },
 ];
 
 const DROPOFF_TABS: { id: DetailTab; label: string }[] = [
   { id: "flight", label: "Flight" },
-  { id: "departure", label: "Departure" },
-  { id: "dropoff", label: "Dropoff" },
+  { id: "departure", label: "Flight departure" },
+  { id: "leave", label: "Leave by" },
 ];
 
 function tripMode(value: string | null | undefined): TripMode {
@@ -330,7 +341,7 @@ export function Tracker({
         {flight ? (
           <p className="px-1 text-sm text-muted">
             {purpose === "dropoff"
-              ? "Departure and leave-by update every 5 minutes."
+              ? "Flight departure and leave-by update every 5 minutes."
               : "Arrival and leave-by update every 5 minutes."}
           </p>
         ) : null}
@@ -345,11 +356,11 @@ export function Tracker({
       {flight ? (
         <div className="flex flex-col gap-4" aria-live="polite">
           {purpose === "pickup" ? (
-            <DetailTabs label="Pickup" tabs={PICKUP_TABS} tab={detailTab === "dropoff" ? "flight" : detailTab} onTab={setDetailTab}>
-              {detailTab === "flight" || detailTab === "dropoff" ? <FlightInfo flight={flight} /> : null}
+            <DetailTabs label="Pickup" tabs={PICKUP_TABS} tab={detailTab} onTab={setDetailTab}>
+              {detailTab === "flight" ? <FlightInfo flight={flight} /> : null}
               {detailTab === "departure" ? <DepartureTime flight={flight} now={now} /> : null}
               {detailTab === "arrival" ? <ArrivalPanel flight={flight} now={now} /> : null}
-              {detailTab === "pickup" ? (
+              {detailTab === "leave" ? (
                 <Pickup
                   flight={flight}
                   now={now}
@@ -363,19 +374,20 @@ export function Tracker({
                   driveLoading={driveLoading}
                 />
               ) : null}
+              {detailTab === "route" ? <RouteMap flight={flight} /> : null}
             </DetailTabs>
           ) : (
             <DetailTabs
               label="Dropoff"
               tabs={DROPOFF_TABS}
-              tab={detailTab === "pickup" || detailTab === "arrival" ? "flight" : detailTab}
+              tab={detailTab === "arrival" || detailTab === "route" ? "flight" : detailTab}
               onTab={setDetailTab}
             >
-              {detailTab === "flight" || detailTab === "pickup" || detailTab === "arrival" ? (
+              {detailTab === "flight" || detailTab === "arrival" || detailTab === "route" ? (
                 <FlightInfo flight={flight} />
               ) : null}
               {detailTab === "departure" ? <DropoffDeparture flight={flight} now={now} /> : null}
-              {detailTab === "dropoff" ? (
+              {detailTab === "leave" ? (
                 <Dropoff
                   flight={flight}
                   now={now}
@@ -503,7 +515,7 @@ function DetailTabs({
       <div
         role="tablist"
         aria-label={label}
-        className={`grid gap-1 rounded-2xl bg-card p-1 ${tabs.length === 3 ? "grid-cols-3" : "grid-cols-4"}`}
+        className={`grid gap-1 rounded-2xl bg-card p-1 ${tabs.length === 5 ? "grid-cols-5" : "grid-cols-3"}`}
       >
         {tabs.map((item) => {
           const selected = tab === item.id;
@@ -517,7 +529,7 @@ function DetailTabs({
               aria-controls={`${label}-panel-${item.id}`}
               tabIndex={selected ? 0 : -1}
               onClick={() => onTab(item.id)}
-              className={`h-11 rounded-xl px-1 text-sm font-semibold ${selected ? "bg-amber text-ink" : "text-muted"}`}
+              className={`flex min-h-11 items-center justify-center rounded-xl px-0.5 py-1.5 text-center text-[11px] font-semibold leading-tight sm:text-xs ${selected ? "bg-amber text-ink" : "text-muted"}`}
             >
               {item.label}
             </button>
@@ -598,7 +610,7 @@ function DepartureTime({ flight, now }: { flight: FlightSnapshot; now: number })
   const estimated = flight.departure.estimated;
   const scheduled = flight.departure.scheduled;
   const when = actual ?? estimated ?? scheduled;
-  const label = actual ? "Actual departure" : estimated ? "Estimated departure" : "Scheduled departure";
+  const label = actual ? "Actual flight departure" : estimated ? "Estimated flight departure" : "Scheduled flight departure";
   const viewerZone = when ? timeZoneName(when) : "";
   const airportZone = flight.origin.timeZone;
   const airportClock = when ? formatClock(when, airportZone) : null;
@@ -629,7 +641,7 @@ function DepartureTime({ flight, now }: { flight: FlightSnapshot; now: number })
           ) : null}
         </>
       ) : (
-        <p className="mt-4 text-sm text-muted">Departure time isn&apos;t posted yet.</p>
+        <p className="mt-4 text-sm text-muted">Flight departure time isn&apos;t posted yet.</p>
       )}
     </section>
   );
@@ -736,7 +748,7 @@ function DepartureWait({
   const soon = Math.abs(remainingMs) < 30_000;
   return (
     <div className={prominent ? "" : "mt-5 rounded-2xl bg-card-2 px-4 py-4"}>
-      <p className="text-sm text-muted">{due ? "Departure estimate passed" : "Until departure"}</p>
+      <p className="text-sm text-muted">{due ? "Flight departure estimate passed" : "Until the flight leaves"}</p>
       <p className={`${fraunces.className} mt-1 leading-none tracking-tight text-cream ${prominent ? "text-5xl" : "text-4xl"}`}>
         {soon ? "Now" : formatSpan(Math.abs(remainingMs) / 1000)}
       </p>
@@ -822,7 +834,7 @@ function Pickup({
 
   return (
     <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5">
-      <h2 className="text-sm font-medium text-cream">Pickup</h2>
+      <h2 className="text-sm font-medium text-cream">Leave by</h2>
       <p className="mt-1 text-sm leading-5 text-muted">
         A typical drive to {airport}, plus time for them to reach the curb. This is not live traffic.
       </p>
@@ -925,7 +937,7 @@ function Dropoff({
 
   return (
     <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5">
-      <h2 className="text-sm font-medium text-cream">Dropoff</h2>
+      <h2 className="text-sm font-medium text-cream">Leave by</h2>
       <p className="mt-1 text-sm leading-5 text-muted">
         A typical drive to {airport}, timed so you arrive before departure. This is not live traffic.
       </p>
