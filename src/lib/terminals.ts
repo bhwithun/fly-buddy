@@ -21,8 +21,15 @@ const GENERIC = new Set([
   "HALL",
 ]);
 
-const placeCache = new Map<string, { at: number; places: TerminalPlace[] }>();
-const PLACE_TTL_MS = 24 * 60 * 60 * 1000;
+/** OpenStreetMap terminal buildings and concourses, kept local so a lookup does not wait on Overpass. */
+const KNOWN_PLACES: TerminalPlace[] = [
+  { name: "A Concourse", ref: null, lat: 42.2085823, lon: -83.357856 },
+  { name: "B Concourse", ref: null, lat: 42.208343, lon: -83.362498 },
+  { name: "C Concourse", ref: null, lat: 42.210771, lon: -83.3607074 },
+  { name: "D Concourse", ref: null, lat: 42.2260828, lon: -83.3488325 },
+  { name: "McNamara Terminal", ref: null, lat: 42.207924, lon: -83.3565806 },
+  { name: "Warren Cleage Evans Terminal", ref: null, lat: 42.2256094, lon: -83.3482903 },
+];
 
 function compact(value: string) {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -140,67 +147,21 @@ export function matchTerminalName(code: string | null, gate: string | null, plac
   return building ? named(building, normalized) : null;
 }
 
-type OverpassElement = {
-  tags?: Record<string, string>;
-  lat?: number;
-  lon?: number;
-  center?: { lat?: number; lon?: number };
-};
-
-function placeFromElement(element: OverpassElement): TerminalPlace | null {
-  const tags = element.tags ?? {};
-  const name = tags.short_name || tags.name || tags.full_name || "";
-  if (!name) return null;
-  const lat = element.lat ?? element.center?.lat ?? null;
-  const lon = element.lon ?? element.center?.lon ?? null;
-  return {
-    name,
-    ref: tags.ref || tags["aeroway:ref"] || null,
-    lat: typeof lat === "number" ? lat : null,
-    lon: typeof lon === "number" ? lon : null,
-  };
+function nearbyPlaces(lat: number, lon: number) {
+  const latWindow = 8 / 111;
+  const lonWindow = 8 / (111 * Math.max(0.2, Math.cos((lat * Math.PI) / 180)));
+  return KNOWN_PLACES.filter((place) => {
+    if (place.lat == null || place.lon == null) return false;
+    return Math.abs(place.lat - lat) <= latWindow && Math.abs(place.lon - lon) <= lonWindow;
+  });
 }
 
-async function fetchPlaces(lat: number, lon: number) {
-  const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
-  const cached = placeCache.get(key);
-  if (cached && Date.now() - cached.at < PLACE_TTL_MS) return cached.places;
-
-  const query = `[out:json][timeout:12];(node["aeroway"="terminal"](around:8000,${lat},${lon});way["aeroway"="terminal"](around:8000,${lat},${lon});relation["aeroway"="terminal"](around:8000,${lat},${lon}););out center tags;`;
-  const response = await fetch("https://overpass-api.de/api/interpreter", {
-    method: "POST",
-    cache: "no-store",
-    signal: AbortSignal.timeout(8_000),
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-      "User-Agent": "fly-buddy/1.0 (arrival pickup planner; contact: brian@brianandkathi.com)",
-    },
-    body: new URLSearchParams({ data: query }),
-  });
-  if (!response.ok) throw new Error(`terminal lookup ${response.status}`);
-  const body = (await response.json()) as { elements?: OverpassElement[] };
-  const places = (body.elements ?? []).flatMap((element) => {
-    const place = placeFromElement(element);
-    return place ? [place] : [];
-  });
-  placeCache.set(key, { at: Date.now(), places });
-  return places;
-}
-
-export async function resolveTerminalName(stop: {
+export function resolveTerminalName(stop: {
   terminal: string | null;
   gate: string | null;
   lat: number | null;
   lon: number | null;
 }) {
   if (!stop.terminal || stop.lat == null || stop.lon == null) return null;
-  try {
-    const places = await fetchPlaces(stop.lat, stop.lon);
-    return matchTerminalName(stop.terminal, stop.gate, places);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "unknown";
-    console.error("Terminal name lookup failed", reason);
-    return null;
-  }
+  return matchTerminalName(stop.terminal, stop.gate, nearbyPlaces(stop.lat, stop.lon));
 }

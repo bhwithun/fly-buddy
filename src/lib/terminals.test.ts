@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { commonTerminalName, matchTerminalName, type TerminalPlace } from "./terminals";
+import { commonTerminalName, matchTerminalName, resolveTerminalName, type TerminalPlace } from "./terminals";
 
 const dtw: TerminalPlace[] = [
   { name: "A Concourse", ref: null, lat: 42.2085823, lon: -83.357856 },
@@ -22,6 +22,15 @@ test("names DTW terminal E as Evans and keeps a plain concourse code quiet", () 
   assert.equal(matchTerminalName("D", "D20", dtw), "Evans Terminal");
   assert.equal(matchTerminalName("A", "A18", dtw), "McNamara Terminal");
   assert.equal(matchTerminalName("1", "C4", [{ name: "Terminal 1", ref: "1", lat: 1, lon: 1 }]), null);
+});
+
+test("resolves the bundled Detroit terminals from the airport coordinates", () => {
+  assert.equal(
+    resolveTerminalName({ terminal: "E", gate: "D20", lat: 42.2124, lon: -83.3534 }),
+    "Evans Terminal",
+  );
+  assert.equal(resolveTerminalName({ terminal: "A", gate: "A18", lat: 42.2124, lon: -83.3534 }), "McNamara Terminal");
+  assert.equal(resolveTerminalName({ terminal: "1", gate: "C4", lat: 36.08, lon: -115.15 }), null);
 });
 
 test("uses a building name that is not just the terminal code", () => {

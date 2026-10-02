@@ -70,7 +70,7 @@ export async function lookupFlight(ident: string, fresh = false): Promise<Flight
   if (!data) throw new FlightNotFoundError();
 
   const flight = parseTrackpoll(data);
-  flight.destination.terminalName = await resolveTerminalName(flight.destination);
+  flight.destination.terminalName = resolveTerminalName(flight.destination);
   cache.set(ident, { at: Date.now(), flight });
   return flight;
 }
