@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { cleanIdent } from "@/lib/flightaware";
@@ -13,15 +12,6 @@ import type { DriveEstimate, FlightSnapshot } from "@/lib/types";
 const REFRESH_MS = 5 * 60 * 1000;
 const LEGACY_ADDRESS_KEY = "fly-buddy.address";
 const LEGACY_BUFFER_KEY = "fly-buddy.buffer";
-
-function MapFallback() {
-  return <div className="map-frame h-64 animate-pulse sm:h-72" aria-hidden="true" />;
-}
-
-const RouteMap = dynamic(
-  () => import("@/components/route-map").then((mod) => mod.RouteMap),
-  { ssr: false, loading: MapFallback },
-);
 
 const storageListeners = new Set<() => void>();
 
@@ -67,14 +57,20 @@ async function readError(response: Response, fallback: string) {
 }
 
 type TripMode = "pickup" | "dropoff";
-type PickupTab = "flight" | "departure" | "arrival" | "pickup" | "route";
+type DetailTab = "flight" | "departure" | "arrival" | "pickup" | "dropoff";
 
-const PICKUP_TABS: { id: PickupTab; label: string }[] = [
+const PICKUP_TABS: { id: DetailTab; label: string }[] = [
   { id: "flight", label: "Flight" },
   { id: "departure", label: "Departure" },
   { id: "arrival", label: "Arrival" },
   { id: "pickup", label: "Pickup" },
-  { id: "route", label: "Route" },
+];
+
+const DROPOFF_TABS: { id: DetailTab; label: string }[] = [
+  { id: "flight", label: "Flight" },
+  { id: "departure", label: "Departure" },
+  { id: "arrival", label: "Arrival" },
+  { id: "dropoff", label: "Dropoff" },
 ];
 
 function tripMode(value: string | null | undefined): TripMode {
@@ -119,7 +115,7 @@ export function Tracker({
     error: string | null;
   } | null>(null);
   const [driveNonce, setDriveNonce] = useState(0);
-  const [pickupTab, setPickupTab] = useState<PickupTab>("flight");
+  const [detailTab, setDetailTab] = useState<DetailTab>("flight");
   const initialIdent = useRef(rememberedFlight);
   const lookupGen = useRef(0);
 
@@ -147,7 +143,7 @@ export function Tracker({
         const body = (await response.json()) as { flight: FlightSnapshot };
         if (lookupGen.current !== generation) return;
         setFlight(body.flight);
-        if (!quiet) setPickupTab("flight");
+        if (!quiet) setDetailTab("flight");
         setQuery(clean);
         setUpdatedAt(Date.now());
         setRefreshNote(null);
@@ -359,37 +355,45 @@ export function Tracker({
       {flight ? (
         <div className="flex flex-col gap-4" aria-live="polite">
           {purpose === "pickup" ? (
-            <PickupTabs
-              tab={pickupTab}
-              onTab={setPickupTab}
-              flight={flight}
-              now={now}
-              buffer={buffer}
-              onBuffer={(minutes) => setBufferValue(String(minutes))}
-              draft={addressField}
-              onDraft={setDraft}
-              onAddress={onAddress}
-              drive={drive}
-              driveError={addressError ?? driveError}
-              driveLoading={driveLoading}
-            />
+            <DetailTabs label="Pickup" tabs={PICKUP_TABS} tab={detailTab === "dropoff" ? "flight" : detailTab} onTab={setDetailTab}>
+              {detailTab === "flight" || detailTab === "dropoff" ? <FlightInfo flight={flight} /> : null}
+              {detailTab === "departure" ? <DepartureTime flight={flight} now={now} /> : null}
+              {detailTab === "arrival" ? <ArrivalPanel flight={flight} now={now} /> : null}
+              {detailTab === "pickup" ? (
+                <Pickup
+                  flight={flight}
+                  now={now}
+                  buffer={buffer}
+                  onBuffer={(minutes) => setBufferValue(String(minutes))}
+                  draft={addressField}
+                  onDraft={setDraft}
+                  onAddress={onAddress}
+                  drive={drive}
+                  driveError={addressError ?? driveError}
+                  driveLoading={driveLoading}
+                />
+              ) : null}
+            </DetailTabs>
           ) : (
-            <>
-              <FlightSummary flight={flight} now={now} purpose="dropoff" />
-              <Dropoff
-                flight={flight}
-                now={now}
-                early={early}
-                onEarly={(minutes) => setEarlyValue(String(minutes))}
-                draft={addressField}
-                onDraft={setDraft}
-                onAddress={onAddress}
-                drive={drive}
-                driveError={addressError ?? driveError}
-                driveLoading={driveLoading}
-              />
-              <RouteMap flight={flight} />
-            </>
+            <DetailTabs label="Dropoff" tabs={DROPOFF_TABS} tab={detailTab === "pickup" ? "flight" : detailTab} onTab={setDetailTab}>
+              {detailTab === "flight" || detailTab === "pickup" ? <FlightInfo flight={flight} /> : null}
+              {detailTab === "departure" ? <DropoffDeparture flight={flight} now={now} /> : null}
+              {detailTab === "arrival" ? <ArrivalPanel flight={flight} now={now} /> : null}
+              {detailTab === "dropoff" ? (
+                <Dropoff
+                  flight={flight}
+                  now={now}
+                  early={early}
+                  onEarly={(minutes) => setEarlyValue(String(minutes))}
+                  draft={addressField}
+                  onDraft={setDraft}
+                  onAddress={onAddress}
+                  drive={drive}
+                  driveError={addressError ?? driveError}
+                  driveLoading={driveLoading}
+                />
+              ) : null}
+            </DetailTabs>
           )}
           <div className="flex items-center justify-between gap-3 px-1 text-xs text-muted">
             <p className="min-w-0 truncate">
@@ -456,81 +460,77 @@ function timingBadge(flight: FlightSnapshot): { label: string; tone: "late" | "e
   return { label: "ON-TIME", tone: "early" };
 }
 
-function PickupTabs({
+function DetailTabs({
+  label,
+  tabs,
   tab,
   onTab,
-  flight,
-  now,
-  buffer,
-  onBuffer,
-  draft,
-  onDraft,
-  onAddress,
-  drive,
-  driveError,
-  driveLoading,
+  children,
 }: {
-  tab: PickupTab;
-  onTab: (tab: PickupTab) => void;
-  flight: FlightSnapshot;
-  now: number;
-  buffer: MeetBuffer;
-  onBuffer: (minutes: MeetBuffer) => void;
-  draft: string;
-  onDraft: (value: string) => void;
-  onAddress: (event: FormEvent<HTMLFormElement>) => void;
-  drive: DriveEstimate | null;
-  driveError: string | null;
-  driveLoading: boolean;
+  label: string;
+  tabs: { id: DetailTab; label: string }[];
+  tab: DetailTab;
+  onTab: (tab: DetailTab) => void;
+  children: ReactNode;
 }) {
   return (
     <div>
-      <div role="tablist" aria-label="Pickup" className="grid grid-cols-5 gap-1 rounded-2xl bg-card p-1">
-        {PICKUP_TABS.map((item) => {
+      <div role="tablist" aria-label={label} className="grid grid-cols-4 gap-1 rounded-2xl bg-card p-1">
+        {tabs.map((item) => {
           const selected = tab === item.id;
           return (
             <button
               key={item.id}
               type="button"
               role="tab"
-              id={`pickup-tab-${item.id}`}
+              id={`${label}-tab-${item.id}`}
               aria-selected={selected}
-              aria-controls={`pickup-panel-${item.id}`}
+              aria-controls={`${label}-panel-${item.id}`}
               tabIndex={selected ? 0 : -1}
               onClick={() => onTab(item.id)}
-              className={`h-11 rounded-xl px-1 text-[11px] font-semibold sm:text-sm ${
-                selected ? "bg-amber text-ink" : "text-muted"
-              }`}
+              className={`h-11 rounded-xl px-1 text-sm font-semibold ${selected ? "bg-amber text-ink" : "text-muted"}`}
             >
               {item.label}
             </button>
           );
         })}
       </div>
-      <div role="tabpanel" id={`pickup-panel-${tab}`} aria-labelledby={`pickup-tab-${tab}`} className="mt-3">
-        {tab === "flight" ? <FlightInfo flight={flight} /> : null}
-        {tab === "departure" ? <DepartureTime flight={flight} now={now} /> : null}
-        {tab === "arrival" ? (
-          <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5">
-            <ArrivalBlock flight={flight} now={now} />
-          </section>
-        ) : null}
-        {tab === "pickup" ? (
-          <Pickup
-            flight={flight}
-            now={now}
-            buffer={buffer}
-            onBuffer={onBuffer}
-            draft={draft}
-            onDraft={onDraft}
-            onAddress={onAddress}
-            drive={drive}
-            driveError={driveError}
-            driveLoading={driveLoading}
-          />
-        ) : null}
-        {tab === "route" ? <RouteMap flight={flight} /> : null}
+      <div role="tabpanel" id={`${label}-panel-${tab}`} aria-labelledby={`${label}-tab-${tab}`} className="mt-3">
+        {children}
       </div>
+    </div>
+  );
+}
+
+function ArrivalPanel({ flight, now }: { flight: FlightSnapshot; now: number }) {
+  return (
+    <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5">
+      <ArrivalBlock flight={flight} now={now} />
+    </section>
+  );
+}
+
+function DropoffDeparture({ flight, now }: { flight: FlightSnapshot; now: number }) {
+  const departAt = flight.departure.estimated ?? flight.departure.scheduled;
+  const waitingToLeave =
+    departAt != null &&
+    flight.status !== "cancelled" &&
+    flight.status !== "diverted" &&
+    !hasDeparted(flight);
+  const gone = hasDeparted(flight);
+  return (
+    <div className="flex flex-col gap-3">
+      <DepartureTime flight={flight} now={now} />
+      <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5">
+        {gone ? <p className="text-sm text-muted">Already departed</p> : null}
+        {!gone && waitingToLeave && departAt != null ? (
+          <DepartureWait flight={flight} departAt={departAt} now={now} prominent />
+        ) : null}
+        <dl className={`grid grid-cols-2 gap-3 ${gone || waitingToLeave ? "mt-5" : ""}`}>
+          <Info label="Depart terminal" value={flight.origin.terminal} detail={flight.origin.terminalName} />
+          <Info label="Depart gate" value={flight.origin.gate} />
+        </dl>
+      </section>
     </div>
   );
 }
@@ -627,55 +627,6 @@ function Chip({
   );
 }
 
-function FlightSummary({ flight, now, purpose }: { flight: FlightSnapshot; now: number; purpose: TripMode }) {
-  const departAt = flight.departure.estimated ?? flight.departure.scheduled;
-  const waitingToLeave =
-    departAt != null &&
-    flight.status !== "cancelled" &&
-    flight.status !== "diverted" &&
-    !hasDeparted(flight);
-  const tone = flight.status === "cancelled" || flight.status === "diverted"
-    ? "late"
-    : flight.status === "enroute" || flight.status === "taxiing"
-      ? "sky"
-      : flight.status === "arrived"
-        ? "early"
-        : "quiet";
-
-  return (
-    <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5 shadow-[0_20px_50px_rgb(0_0_0/0.25)]">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-wide text-cream">{flight.ident}</h1>
-          <p className="text-sm text-muted">{flight.friendlyName}</p>
-        </div>
-        <Chip tone={tone}>{flight.statusLabel}</Chip>
-      </div>
-
-      <div className="mt-5 grid grid-cols-[1fr_auto_1fr] items-start gap-3">
-        <Airport code={flight.origin.code} name={flight.origin.name} place={flight.origin.location} />
-        <span className="px-1 pt-1 text-amber" aria-hidden="true">
-          →
-        </span>
-        <Airport code={flight.destination.code} name={flight.destination.name} place={flight.destination.location} align="end" />
-      </div>
-
-      {purpose === "dropoff" ? (
-        <DropoffFlight flight={flight} now={now} departAt={departAt} waitingToLeave={waitingToLeave} />
-      ) : (
-        <>
-          {waitingToLeave && departAt != null ? (
-            <DepartureWait flight={flight} departAt={departAt} now={now} />
-          ) : hasDeparted(flight) && flight.aircraft ? (
-            <p className="mt-3 text-sm text-muted">{flight.aircraft}</p>
-          ) : null}
-          <ArrivalBlock flight={flight} now={now} />
-        </>
-      )}
-    </section>
-  );
-}
-
 function ArrivalBlock({ flight, now }: { flight: FlightSnapshot; now: number }) {
   const zone = flight.destination.timeZone;
   const when = arrivalInstant(flight.arrival);
@@ -730,50 +681,6 @@ function ArrivalBlock({ flight, now }: { flight: FlightSnapshot; now: number }) 
   );
 }
 
-function DropoffFlight({
-  flight,
-  now,
-  departAt,
-  waitingToLeave,
-}: {
-  flight: FlightSnapshot;
-  now: number;
-  departAt: number | null;
-  waitingToLeave: boolean;
-}) {
-  const gone = hasDeparted(flight);
-  const arrival = arrivalInstant(flight.arrival);
-  return (
-    <>
-      {gone ? (
-        <div className="mt-5">
-          <p className="text-sm text-muted">Already departed</p>
-          <p className={`${fraunces.className} mt-1 text-4xl leading-none text-cream`}>
-            {flight.departure.actual ? formatClock(flight.departure.actual, flight.origin.timeZone) : "Left"}
-          </p>
-          {flight.aircraft ? <p className="mt-2 text-sm text-muted">{flight.aircraft}</p> : null}
-        </div>
-      ) : waitingToLeave && departAt != null ? (
-        <DepartureWait flight={flight} departAt={departAt} now={now} prominent />
-      ) : (
-        <p className="mt-5 text-sm text-muted">Departure time isn&apos;t posted yet.</p>
-      )}
-
-      <dl className="mt-5 grid grid-cols-2 gap-3">
-        <Info label="Depart terminal" value={flight.origin.terminal} detail={flight.origin.terminalName} />
-        <Info label="Depart gate" value={flight.origin.gate} />
-      </dl>
-
-      {arrival != null ? (
-        <p className="mt-4 text-sm text-muted">
-          Lands at {flight.destination.code} {formatClock(arrival, flight.destination.timeZone)}{" "}
-          {timeZoneName(arrival, flight.destination.timeZone)}
-        </p>
-      ) : null}
-    </>
-  );
-}
-
 function hasDeparted(flight: FlightSnapshot) {
   return (
     flight.status === "enroute" ||
@@ -799,7 +706,7 @@ function DepartureWait({
   const due = remainingMs < -30_000;
   const soon = Math.abs(remainingMs) < 30_000;
   return (
-    <div className={prominent ? "mt-5" : "mt-5 rounded-2xl bg-card-2 px-4 py-4"}>
+    <div className={prominent ? "" : "mt-5 rounded-2xl bg-card-2 px-4 py-4"}>
       <p className="text-sm text-muted">{due ? "Departure estimate passed" : "Until departure"}</p>
       <p className={`${fraunces.className} mt-1 leading-none tracking-tight text-cream ${prominent ? "text-5xl" : "text-4xl"}`}>
         {soon ? "Now" : formatSpan(Math.abs(remainingMs) / 1000)}
