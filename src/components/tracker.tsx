@@ -388,8 +388,12 @@ function FlightSummary({ flight, now }: { flight: FlightSnapshot; now: number })
   const airportClock = when ? formatClock(when, zone) : null;
   const localClock = when ? formatClock(when) : null;
   const zoneLabel = when ? timeZoneName(when, zone) : "";
-  const departAt = flight.departure.actual ?? flight.departure.estimated ?? flight.departure.scheduled;
-  const departed = flight.departure.actual != null;
+  const departAt = flight.departure.estimated ?? flight.departure.scheduled;
+  const waitingToLeave =
+    departAt != null &&
+    flight.status !== "cancelled" &&
+    flight.status !== "diverted" &&
+    !hasDeparted(flight);
   const tone = flight.status === "cancelled" || flight.status === "diverted"
     ? "late"
     : flight.status === "enroute" || flight.status === "taxiing"
@@ -419,12 +423,10 @@ function FlightSummary({ flight, now }: { flight: FlightSnapshot; now: number })
         <Airport code={flight.destination.code} name={flight.destination.name} place={flight.destination.location} align="end" />
       </div>
 
-      {departAt ? (
-        <p className="mt-3 text-sm text-muted">
-          {departed ? "Left" : "Leaves"} {formatClock(departAt, flight.origin.timeZone)}{" "}
-          {timeZoneName(departAt, flight.origin.timeZone)}
-          {flight.aircraft ? ` · ${flight.aircraft}` : ""}
-        </p>
+      {waitingToLeave && departAt != null ? (
+        <DepartureWait flight={flight} departAt={departAt} now={now} />
+      ) : hasDeparted(flight) && flight.aircraft ? (
+        <p className="mt-3 text-sm text-muted">{flight.aircraft}</p>
       ) : null}
 
       <div className="mt-5 border-t border-line pt-5">
@@ -467,6 +469,36 @@ function FlightSummary({ flight, now }: { flight: FlightSnapshot; now: number })
         <Info label="Gate" value={flight.destination.gate} />
       </dl>
     </section>
+  );
+}
+
+function hasDeparted(flight: FlightSnapshot) {
+  return (
+    flight.status === "enroute" ||
+    flight.status === "taxiing" ||
+    flight.status === "arrived" ||
+    flight.departure.actual != null
+  );
+}
+
+function DepartureWait({ flight, departAt, now }: { flight: FlightSnapshot; departAt: number; now: number }) {
+  const zone = flight.origin.timeZone;
+  const remainingMs = departAt * 1000 - now;
+  const due = remainingMs < -30_000;
+  const soon = Math.abs(remainingMs) < 30_000;
+  return (
+    <div className="mt-5 rounded-2xl bg-card-2 px-4 py-4">
+      <p className="text-sm text-muted">{due ? "Departure estimate passed" : "Until departure"}</p>
+      <p className={`${fraunces.className} mt-1 text-4xl leading-none tracking-tight text-cream`}>
+        {soon ? "Now" : formatSpan(Math.abs(remainingMs) / 1000)}
+      </p>
+      <p className="mt-2 text-sm text-muted">
+        {formatClock(departAt, zone)} {timeZoneName(departAt, zone)}
+        {" · "}
+        {formatDay(departAt, zone)}
+      </p>
+      {flight.aircraft ? <p className="mt-1 text-sm text-muted">{flight.aircraft}</p> : null}
+    </div>
   );
 }
 
