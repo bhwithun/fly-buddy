@@ -5,7 +5,7 @@ const CACHE_MS = 20_000;
 const cache = new Map<string, { at: number; flight: FlightSnapshot }>();
 
 const USER_AGENT =
-  "fly-buddy/1.0 (personal arrival tracker; +https://github.com/bhwithun/fly-buddy)";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
 export function cleanIdent(input: string) {
   return input.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
@@ -39,11 +39,14 @@ export async function lookupFlight(ident: string, fresh = false): Promise<Flight
         "User-Agent": USER_AGENT,
       },
     });
-  } catch {
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "unknown";
+    console.error("FlightAware request failed", reason);
     throw new Error("FlightAware didn't respond. Try again in a moment.");
   }
 
   if (!response.ok) {
+    console.error("FlightAware request failed", response.status, response.headers.get("cf-ray"));
     throw new Error("FlightAware didn't respond. Try again in a moment.");
   }
 
