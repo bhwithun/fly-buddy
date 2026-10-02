@@ -67,6 +67,15 @@ async function readError(response: Response, fallback: string) {
 }
 
 type TripMode = "pickup" | "dropoff";
+type PickupTab = "flight" | "departure" | "arrival" | "pickup" | "route";
+
+const PICKUP_TABS: { id: PickupTab; label: string }[] = [
+  { id: "flight", label: "Flight" },
+  { id: "departure", label: "Departure" },
+  { id: "arrival", label: "Arrival" },
+  { id: "pickup", label: "Pickup" },
+  { id: "route", label: "Route" },
+];
 
 function tripMode(value: string | null | undefined): TripMode {
   return value === "dropoff" ? "dropoff" : "pickup";
@@ -110,7 +119,9 @@ export function Tracker({
     error: string | null;
   } | null>(null);
   const [driveNonce, setDriveNonce] = useState(0);
+  const [pickupTab, setPickupTab] = useState<PickupTab>("flight");
   const initialIdent = useRef(rememberedFlight);
+  const lookupGen = useRef(0);
 
   const buffer = normalizeBuffer(Number(bufferValue));
   const early = normalizeEarly(Number(earlyValue));
@@ -123,6 +134,7 @@ export function Tracker({
         return;
       }
       const quiet = mode === "poll";
+      const generation = ++lookupGen.current;
       if (!quiet) {
         setLoading(true);
         setError(null);
@@ -133,7 +145,9 @@ export function Tracker({
           throw new Error(await readError(response, "Couldn't look up that flight."));
         }
         const body = (await response.json()) as { flight: FlightSnapshot };
+        if (lookupGen.current !== generation) return;
         setFlight(body.flight);
+        if (!quiet) setPickupTab("flight");
         setQuery(clean);
         setUpdatedAt(Date.now());
         setRefreshNote(null);
@@ -141,6 +155,7 @@ export function Tracker({
         writeCookie(MODE_COOKIE, purposeRef.current);
         router.replace(`/?flight=${clean}&mode=${purposeRef.current}`, { scroll: false });
       } catch (caught) {
+        if (lookupGen.current !== generation) return;
         const message = caught instanceof Error ? caught.message : "Couldn't look up that flight.";
         if (quiet) setRefreshNote(message);
         else {
@@ -148,7 +163,7 @@ export function Tracker({
           setError(message);
         }
       } finally {
-        if (!quiet) setLoading(false);
+        if (!quiet && lookupGen.current === generation) setLoading(false);
       }
     },
     [router],
@@ -241,21 +256,17 @@ export function Tracker({
 
   function onChoose(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (flight || loading) return;
     const submitter = (event.nativeEvent as SubmitEvent).submitter;
     const selected = submitter instanceof HTMLButtonElement ? submitter.value : "";
     const next = selected === "dropoff" ? "dropoff" : "pickup";
     purposeRef.current = next;
     setPurpose(next);
-    const clean = cleanIdent(query);
-    if (flight && clean === flight.ident) {
-      writeCookie(MODE_COOKIE, next);
-      router.replace(`/?flight=${clean}&mode=${next}`, { scroll: false });
-      return;
-    }
     void loadFlight(query);
   }
 
   function onClear() {
+    lookupGen.current += 1;
     setFlight(null);
     setError(null);
     setRefreshNote(null);
@@ -308,7 +319,7 @@ export function Tracker({
               enterKeyHint="search"
               className="h-12 min-w-0 flex-1 rounded-2xl border border-line bg-card px-4 text-base tracking-wide text-cream outline-none placeholder:text-muted/70"
             />
-            {flight ? (
+            {flight || loading ? (
               <button
                 type="button"
                 onClick={onClear}
@@ -318,25 +329,18 @@ export function Tracker({
               </button>
             ) : null}
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <ModeButton
-              purpose="pickup"
-              active={(!flight && !loading) || purpose === "pickup"}
-              pressed={Boolean(flight) && purpose === "pickup"}
-              disabled={loading}
-            >
-              {loading && purpose === "pickup" ? "Looking…" : "Pickup"}
-            </ModeButton>
-            <ModeButton
-              purpose="dropoff"
-              active={(!flight && !loading) || purpose === "dropoff"}
-              pressed={Boolean(flight) && purpose === "dropoff"}
-              disabled={loading}
-            >
-              {loading && purpose === "dropoff" ? "Looking…" : "Dropoff"}
-            </ModeButton>
-          </div>
+          {flight || loading ? null : (
+            <div className="grid grid-cols-2 gap-2">
+              <ModeButton purpose="pickup" disabled={loading}>
+                Pickup
+              </ModeButton>
+              <ModeButton purpose="dropoff" disabled={loading}>
+                Dropoff
+              </ModeButton>
+            </div>
+          )}
         </form>
+        {loading && !flight ? <p className="px-1 text-sm text-muted">Looking up {cleanIdent(query)}…</p> : null}
         {flight ? (
           <p className="px-1 text-sm text-muted">
             {purpose === "dropoff"
@@ -353,23 +357,11 @@ export function Tracker({
       ) : null}
 
       {flight ? (
-        <div className="flex flex-col gap-6" aria-live="polite">
-          <FlightSummary flight={flight} now={now} purpose={purpose} />
-          {purpose === "dropoff" ? (
-            <Dropoff
-              flight={flight}
-              now={now}
-              early={early}
-              onEarly={(minutes) => setEarlyValue(String(minutes))}
-              draft={addressField}
-              onDraft={setDraft}
-              onAddress={onAddress}
-              drive={drive}
-              driveError={addressError ?? driveError}
-              driveLoading={driveLoading}
-            />
-          ) : (
-            <Pickup
+        <div className="flex flex-col gap-4" aria-live="polite">
+          {purpose === "pickup" ? (
+            <PickupTabs
+              tab={pickupTab}
+              onTab={setPickupTab}
               flight={flight}
               now={now}
               buffer={buffer}
@@ -381,8 +373,24 @@ export function Tracker({
               driveError={addressError ?? driveError}
               driveLoading={driveLoading}
             />
+          ) : (
+            <>
+              <FlightSummary flight={flight} now={now} purpose="dropoff" />
+              <Dropoff
+                flight={flight}
+                now={now}
+                early={early}
+                onEarly={(minutes) => setEarlyValue(String(minutes))}
+                draft={addressField}
+                onDraft={setDraft}
+                onAddress={onAddress}
+                drive={drive}
+                driveError={addressError ?? driveError}
+                driveLoading={driveLoading}
+              />
+              <RouteMap flight={flight} />
+            </>
           )}
-          <RouteMap flight={flight} />
           <div className="flex items-center justify-between gap-3 px-1 text-xs text-muted">
             <p className="min-w-0 truncate">
               {updatedAt ? `Updated ${formatAgo(updatedAt, now)}` : "Updated"}
@@ -420,14 +428,10 @@ function PlaneMark() {
 
 function ModeButton({
   purpose,
-  active,
-  pressed,
   disabled,
   children,
 }: {
   purpose: TripMode;
-  active: boolean;
-  pressed: boolean;
   disabled: boolean;
   children: ReactNode;
 }) {
@@ -437,13 +441,168 @@ function ModeButton({
       name="purpose"
       value={purpose}
       disabled={disabled}
-      aria-pressed={pressed}
-      className={`h-12 rounded-2xl text-base font-semibold disabled:opacity-60 ${
-        active ? "bg-amber text-ink" : "border border-line bg-card-2 text-cream"
-      }`}
+      className="h-12 rounded-2xl bg-amber text-base font-semibold text-ink disabled:opacity-60"
     >
       {children}
     </button>
+  );
+}
+
+function timingBadge(flight: FlightSnapshot): { label: string; tone: "late" | "early" | "quiet" } {
+  if (flight.status === "cancelled") return { label: "CANCELLED", tone: "late" };
+  if (flight.status === "diverted") return { label: "DIVERTED", tone: "late" };
+  if (flight.delayed) return { label: "DELAYED", tone: "late" };
+  if (flight.status === "scheduled") return { label: "SCHEDULED", tone: "quiet" };
+  return { label: "ON-TIME", tone: "early" };
+}
+
+function PickupTabs({
+  tab,
+  onTab,
+  flight,
+  now,
+  buffer,
+  onBuffer,
+  draft,
+  onDraft,
+  onAddress,
+  drive,
+  driveError,
+  driveLoading,
+}: {
+  tab: PickupTab;
+  onTab: (tab: PickupTab) => void;
+  flight: FlightSnapshot;
+  now: number;
+  buffer: MeetBuffer;
+  onBuffer: (minutes: MeetBuffer) => void;
+  draft: string;
+  onDraft: (value: string) => void;
+  onAddress: (event: FormEvent<HTMLFormElement>) => void;
+  drive: DriveEstimate | null;
+  driveError: string | null;
+  driveLoading: boolean;
+}) {
+  return (
+    <div>
+      <div role="tablist" aria-label="Pickup" className="grid grid-cols-5 gap-1 rounded-2xl bg-card p-1">
+        {PICKUP_TABS.map((item) => {
+          const selected = tab === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              id={`pickup-tab-${item.id}`}
+              aria-selected={selected}
+              aria-controls={`pickup-panel-${item.id}`}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => onTab(item.id)}
+              className={`h-11 rounded-xl px-1 text-[11px] font-semibold sm:text-sm ${
+                selected ? "bg-amber text-ink" : "text-muted"
+              }`}
+            >
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+      <div role="tabpanel" id={`pickup-panel-${tab}`} aria-labelledby={`pickup-tab-${tab}`} className="mt-3">
+        {tab === "flight" ? <FlightInfo flight={flight} /> : null}
+        {tab === "departure" ? <DepartureTime flight={flight} now={now} /> : null}
+        {tab === "arrival" ? (
+          <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5">
+            <ArrivalBlock flight={flight} now={now} />
+          </section>
+        ) : null}
+        {tab === "pickup" ? (
+          <Pickup
+            flight={flight}
+            now={now}
+            buffer={buffer}
+            onBuffer={onBuffer}
+            draft={draft}
+            onDraft={onDraft}
+            onAddress={onAddress}
+            drive={drive}
+            driveError={driveError}
+            driveLoading={driveLoading}
+          />
+        ) : null}
+        {tab === "route" ? <RouteMap flight={flight} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function FlightInfo({ flight }: { flight: FlightSnapshot }) {
+  const badge = timingBadge(flight);
+  return (
+    <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-lg font-semibold tracking-wide text-cream">{flight.ident}</h1>
+          <p className="text-sm text-muted">{flight.friendlyName}</p>
+        </div>
+        <Chip tone={badge.tone}>{badge.label}</Chip>
+      </div>
+      <div className="mt-5 grid grid-cols-[1fr_auto_1fr] items-start gap-3">
+        <Airport code={flight.origin.code} name={flight.origin.name} place={flight.origin.location} />
+        <span className="px-1 pt-1 text-amber" aria-hidden="true">
+          →
+        </span>
+        <Airport code={flight.destination.code} name={flight.destination.name} place={flight.destination.location} align="end" />
+      </div>
+      {flight.aircraft ? <p className="mt-4 text-sm text-muted">{flight.aircraft}</p> : null}
+      {flight.delayed && flight.delayMinutes != null ? (
+        <p className="mt-2 text-sm text-late">{Math.abs(flight.delayMinutes)} min late</p>
+      ) : null}
+      {flight.early && flight.delayMinutes != null ? (
+        <p className="mt-2 text-sm text-early">{Math.abs(flight.delayMinutes)} min early</p>
+      ) : null}
+    </section>
+  );
+}
+
+function DepartureTime({ flight, now }: { flight: FlightSnapshot; now: number }) {
+  const actual = flight.departure.actual;
+  const estimated = flight.departure.estimated;
+  const scheduled = flight.departure.scheduled;
+  const when = actual ?? estimated ?? scheduled;
+  const label = actual ? "Actual departure" : estimated ? "Estimated departure" : "Scheduled departure";
+  const viewerZone = when ? timeZoneName(when) : "";
+  const airportZone = flight.origin.timeZone;
+  const airportClock = when ? formatClock(when, airportZone) : null;
+  const viewerClock = when ? formatClock(when) : null;
+  return (
+    <section className="rounded-[1.75rem] border border-line bg-card px-4 py-5">
+      <p className="text-sm text-muted">{label}</p>
+      <p className="mt-1 text-sm text-cream/80">
+        {flight.origin.code}
+        {flight.origin.location ? ` · ${flight.origin.location}` : ""}
+      </p>
+      {when && viewerClock ? (
+        <>
+          <p className={`${fraunces.className} mt-4 text-5xl leading-none tracking-tight text-cream`}>{viewerClock}</p>
+          <p className="mt-2 text-sm text-muted">
+            {formatDay(when)}
+            {viewerZone ? ` · ${viewerZone}` : ""}
+            {` · ${formatUntil(when, now)}`}
+            {" · your time"}
+          </p>
+          {airportClock && airportClock !== viewerClock ? (
+            <p className="mt-2 text-sm text-muted">
+              {airportClock} {timeZoneName(when, airportZone)} at the airport
+            </p>
+          ) : null}
+          {scheduled && actual == null && estimated && Math.abs(estimated - scheduled) >= 5 * 60 ? (
+            <p className="mt-3 text-sm text-muted">Scheduled {formatClock(scheduled)} {timeZoneName(scheduled)}</p>
+          ) : null}
+        </>
+      ) : (
+        <p className="mt-4 text-sm text-muted">Departure time isn&apos;t posted yet.</p>
+      )}
+    </section>
   );
 }
 
@@ -528,7 +687,7 @@ function ArrivalBlock({ flight, now }: { flight: FlightSnapshot; now: number }) 
   const altitude = flight.position?.altitudeFt;
   return (
     <>
-      <div className="mt-5 border-t border-line pt-5">
+      <div>
         <p className="text-sm text-muted">{headline}{flight.arrivalIsGate ? "" : " (runway)"}</p>
         <p className={`${fraunces.className} mt-1 text-5xl leading-none tracking-tight text-cream`}>
           {airportClock ?? "—"}
