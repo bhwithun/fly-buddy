@@ -1,4 +1,5 @@
 import { FlightNotFoundError, parseTrackpoll } from "./parse-flight";
+import { resolveTerminalName } from "./terminals";
 import type { FlightSnapshot } from "./types";
 
 const CACHE_MS = 20_000;
@@ -69,6 +70,7 @@ export async function lookupFlight(ident: string, fresh = false): Promise<Flight
   if (!data) throw new FlightNotFoundError();
 
   const flight = parseTrackpoll(data);
+  flight.destination.terminalName = await resolveTerminalName(flight.destination);
   cache.set(ident, { at: Date.now(), flight });
   return flight;
 }

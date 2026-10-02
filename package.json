@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test src/lib/parse-flight.test.ts src/lib/leave.test.ts"
+    "test": "tsx --test src/lib/parse-flight.test.ts src/lib/leave.test.ts src/lib/prefs.test.ts src/lib/terminals.test.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",

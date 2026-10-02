@@ -3,13 +3,16 @@
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
+import { cleanIdent } from "@/lib/flightaware";
 import { formatAgo, formatClock, formatDay, formatFeet, formatMiles, formatSpan, formatUntil, timeZoneName } from "@/lib/format";
 import { fraunces } from "@/lib/fonts";
 import { MEET_BUFFERS, arrivalInstant, normalizeBuffer, planLeave, type MeetBuffer } from "@/lib/leave";
+import { ADDRESS_COOKIE, BUFFER_COOKIE, FLIGHT_COOKIE, readCookie, writeCookie } from "@/lib/prefs";
 import type { DriveEstimate, FlightSnapshot } from "@/lib/types";
 
-const ADDRESS_KEY = "fly-buddy.address";
-const BUFFER_KEY = "fly-buddy.buffer";
+const REFRESH_MS = 5 * 60 * 1000;
+const LEGACY_ADDRESS_KEY = "fly-buddy.address";
+const LEGACY_BUFFER_KEY = "fly-buddy.buffer";
 
 function MapFallback() {
   return <div className="map-frame h-64 animate-pulse sm:h-72" aria-hidden="true" />;
@@ -33,24 +36,23 @@ function emitStorage() {
   for (const listener of storageListeners) listener();
 }
 
-function readStorage(key: string, fallback: string) {
+function readStorage(key: string) {
   const stored = window.localStorage.getItem(key);
-  return stored == null || stored === "" ? fallback : stored;
+  return stored == null || stored === "" ? "" : stored;
 }
 
-function useStored(key: string, fallback: string) {
+function useCookie(name: string, serverValue: string) {
   const value = useSyncExternalStore(
     subscribeStorage,
-    () => readStorage(key, fallback),
-    () => fallback,
+    () => readCookie(name) ?? "",
+    () => serverValue,
   );
   const setValue = useCallback(
     (next: string) => {
-      if (next) window.localStorage.setItem(key, next);
-      else window.localStorage.removeItem(key);
+      writeCookie(name, next);
       emitStorage();
     },
-    [key],
+    [name],
   );
   return [value, setValue] as const;
 }
@@ -64,18 +66,27 @@ async function readError(response: Response, fallback: string) {
   }
 }
 
-export function Tracker() {
+export function Tracker({
+  initialFlight,
+  initialAddress,
+  initialBuffer,
+}: {
+  initialFlight: string;
+  initialAddress: string;
+  initialBuffer: string;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [query, setQuery] = useState(() => (searchParams.get("flight") ?? "").toUpperCase());
+  const rememberedFlight = cleanIdent(searchParams.get("flight") || initialFlight);
+  const [query, setQuery] = useState(rememberedFlight);
   const [flight, setFlight] = useState<FlightSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshNote, setRefreshNote] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [savedAddress, setSavedAddress] = useStored(ADDRESS_KEY, "");
-  const [bufferValue, setBufferValue] = useStored(BUFFER_KEY, "20");
+  const [savedAddress, setSavedAddress] = useCookie(ADDRESS_COOKIE, initialAddress);
+  const [bufferValue, setBufferValue] = useCookie(BUFFER_COOKIE, initialBuffer);
   const [draft, setDraft] = useState<string | null>(null);
   const [addressError, setAddressError] = useState<string | null>(null);
   const addressField = draft ?? savedAddress;
@@ -85,25 +96,24 @@ export function Tracker() {
     error: string | null;
   } | null>(null);
   const [driveNonce, setDriveNonce] = useState(0);
-  const initialIdent = useRef(searchParams.get("flight"));
+  const initialIdent = useRef(rememberedFlight);
 
   const buffer = normalizeBuffer(Number(bufferValue));
 
   const loadFlight = useCallback(
-    async (ident: string, quiet = false) => {
-      const clean = ident.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+    async (ident: string, mode: "search" | "poll" = "search") => {
+      const clean = cleanIdent(ident);
       if (clean.length < 2) {
         setError("Enter a flight number, like WN4546.");
         return;
       }
+      const quiet = mode === "poll";
       if (!quiet) {
         setLoading(true);
         setError(null);
       }
       try {
-        const response = await fetch(`/api/flight?ident=${clean}${quiet ? "" : "&fresh=1"}`, {
-          cache: "no-store",
-        });
+        const response = await fetch(`/api/flight?ident=${clean}&fresh=1`, { cache: "no-store" });
         if (!response.ok) {
           throw new Error(await readError(response, "Couldn't look up that flight."));
         }
@@ -112,6 +122,7 @@ export function Tracker() {
         setQuery(clean);
         setUpdatedAt(Date.now());
         setRefreshNote(null);
+        writeCookie(FLIGHT_COOKIE, clean);
         router.replace(`/?flight=${clean}`, { scroll: false });
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : "Couldn't look up that flight.";
@@ -128,6 +139,25 @@ export function Tracker() {
   );
 
   useEffect(() => {
+    let changed = false;
+    if (!readCookie(ADDRESS_COOKIE)) {
+      const legacy = readStorage(LEGACY_ADDRESS_KEY);
+      if (legacy) {
+        writeCookie(ADDRESS_COOKIE, legacy);
+        changed = true;
+      }
+    }
+    if (!readCookie(BUFFER_COOKIE)) {
+      const legacy = readStorage(LEGACY_BUFFER_KEY);
+      if (legacy) {
+        writeCookie(BUFFER_COOKIE, legacy);
+        changed = true;
+      }
+    }
+    if (changed) emitStorage();
+  }, []);
+
+  useEffect(() => {
     const ident = initialIdent.current;
     if (!ident) return;
     const timer = window.setTimeout(() => {
@@ -139,8 +169,9 @@ export function Tracker() {
   useEffect(() => {
     if (!flight) return;
     const id = window.setInterval(() => {
-      void loadFlight(flight.ident, true);
-    }, 60_000);
+      setDriveNonce((value) => value + 1);
+      void loadFlight(flight.ident, "poll");
+    }, REFRESH_MS);
     return () => window.clearInterval(id);
   }, [flight, loadFlight]);
 
@@ -155,9 +186,12 @@ export function Tracker() {
     savedAddress.trim() && destLat != null && destLon != null
       ? `${savedAddress.trim()}|${destLat}|${destLon}|${driveNonce}`
       : null;
-  const drive = driveResult?.key === driveKey ? driveResult.drive : null;
-  const driveError = driveResult?.key === driveKey ? driveResult.error : null;
-  const driveLoading = driveKey != null && driveResult?.key !== driveKey;
+  const driveCurrent = driveResult != null && driveResult.key === driveKey;
+  const driveSameTrip =
+    driveResult != null && driveKey != null && tripOf(driveResult.key) === tripOf(driveKey);
+  const drive = driveCurrent ? driveResult.drive : driveSameTrip ? driveResult.drive : null;
+  const driveError = driveCurrent ? driveResult.error : null;
+  const driveLoading = driveKey != null && !driveCurrent;
 
   useEffect(() => {
     if (!driveKey || destLat == null || destLon == null) return;
@@ -193,6 +227,17 @@ export function Tracker() {
     void loadFlight(query);
   }
 
+  function onClear() {
+    setFlight(null);
+    setError(null);
+    setRefreshNote(null);
+    setUpdatedAt(null);
+    setQuery("");
+    setLoading(false);
+    writeCookie(FLIGHT_COOKIE, "");
+    router.replace("/", { scroll: false });
+  }
+
   function onAddress(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const next = addressField.trim();
@@ -217,32 +262,47 @@ export function Tracker() {
         </div>
       </header>
 
-      <form onSubmit={onTrack} className="space-y-2">
-        <label htmlFor="flight" className="px-1 text-sm text-muted">
-          Flight number
-        </label>
-        <div className="flex gap-2">
-          <input
-            id="flight"
-            name="flight"
-            value={query}
-            onChange={(event) => setQuery(event.target.value.toUpperCase())}
-            placeholder="WN4546"
-            autoCapitalize="characters"
-            autoCorrect="off"
-            spellCheck={false}
-            enterKeyHint="search"
-            className="h-12 min-w-0 flex-1 rounded-2xl border border-line bg-card px-4 text-base tracking-wide text-cream outline-none placeholder:text-muted/70"
-          />
-          <button
-            type="submit"
-            disabled={loading}
-            className="h-12 shrink-0 rounded-2xl bg-amber px-5 text-base font-semibold text-ink disabled:opacity-60"
-          >
-            {loading ? "Looking…" : "Track"}
-          </button>
-        </div>
-      </form>
+      <div className="space-y-2">
+        <form onSubmit={onTrack} className="space-y-2">
+          <label htmlFor="flight" className="px-1 text-sm text-muted">
+            Flight number
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="flight"
+              name="flight"
+              value={query}
+              onChange={(event) => setQuery(event.target.value.toUpperCase())}
+              placeholder="WN4546"
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="search"
+              className="h-12 min-w-0 flex-1 rounded-2xl border border-line bg-card px-4 text-base tracking-wide text-cream outline-none placeholder:text-muted/70"
+            />
+            {flight ? (
+              <button
+                type="button"
+                onClick={onClear}
+                className="h-12 shrink-0 rounded-2xl border border-line bg-card-2 px-5 text-base font-semibold text-cream"
+              >
+                Clear
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={loading}
+                className="h-12 shrink-0 rounded-2xl bg-amber px-5 text-base font-semibold text-ink disabled:opacity-60"
+              >
+                {loading ? "Looking…" : "Track"}
+              </button>
+            )}
+          </div>
+        </form>
+        {flight ? (
+          <p className="px-1 text-sm text-muted">Arrival and leave-by update every 5 minutes.</p>
+        ) : null}
+      </div>
 
       {error ? (
         <p role="alert" className="rounded-2xl bg-late/10 px-4 py-3 text-sm text-late">
@@ -267,14 +327,10 @@ export function Tracker() {
           />
           <RouteMap flight={flight} />
           <div className="flex items-center justify-between gap-3 px-1 text-xs text-muted">
-            <button
-              type="button"
-              onClick={() => void loadFlight(flight.ident)}
-              className="min-w-0 truncate text-left text-xs text-muted"
-            >
+            <p className="min-w-0 truncate">
               {updatedAt ? `Updated ${formatAgo(updatedAt, now)}` : "Updated"}
-              {refreshNote ? ` · ${refreshNote}` : ""}. Tap to refresh
-            </button>
+              {refreshNote ? ` · ${refreshNote}` : ""}
+            </p>
             <a
               href={flight.flightAwareUrl}
               target="_blank"
@@ -407,7 +463,7 @@ function FlightSummary({ flight, now }: { flight: FlightSnapshot; now: number })
       </div>
 
       <dl className="mt-5 grid grid-cols-2 gap-3">
-        <Info label="Terminal" value={flight.destination.terminal} />
+        <Info label="Terminal" value={flight.destination.terminal} detail={flight.destination.terminalName} />
         <Info label="Gate" value={flight.destination.gate} />
       </dl>
     </section>
@@ -435,13 +491,18 @@ function Airport({
   );
 }
 
-function Info({ label, value }: { label: string; value: string | null }) {
+function Info({ label, value, detail }: { label: string; value: string | null; detail?: string | null }) {
   return (
     <div className="rounded-2xl bg-card-2 px-3 py-3">
       <dt className="text-xs text-muted">{label}</dt>
-      <dd className={`${fraunces.className} mt-1 text-2xl text-cream`}>{value || "Not posted"}</dd>
+      <dd className={`${fraunces.className} mt-1 text-2xl leading-none text-cream`}>{value || "Not posted"}</dd>
+      {detail ? <p className="mt-1 text-sm leading-5 text-cream/80">{detail}</p> : null}
     </div>
   );
+}
+
+function tripOf(key: string) {
+  return key.split("|").slice(0, 3).join("|");
 }
 
 function Pickup({

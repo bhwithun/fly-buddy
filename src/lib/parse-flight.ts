@@ -75,6 +75,7 @@ function airport(value: unknown): AirportStop {
     lat: point?.lat ?? null,
     lon: point?.lon ?? null,
     terminal: text(raw?.terminal),
+    terminalName: null,
     gate: text(raw?.gate),
     timeZone: timeZone(raw?.TZ),
   };

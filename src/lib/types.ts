@@ -11,6 +11,8 @@ export type AirportStop = {
   lat: number | null;
   lon: number | null;
   terminal: string | null;
+  /** Common building name, such as Evans Terminal, when it differs from the code. */
+  terminalName: string | null;
   gate: string | null;
   timeZone: string | null;
 };
