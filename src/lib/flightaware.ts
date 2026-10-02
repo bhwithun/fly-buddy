@@ -34,8 +34,10 @@ export async function lookupFlight(ident: string, fresh = false): Promise<Flight
       cache: "no-store",
       signal: AbortSignal.timeout(12_000),
       headers: {
-        Accept: "text/html",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Upgrade-Insecure-Requests": "1",
         "User-Agent": USER_AGENT,
       },
     });
@@ -46,7 +48,14 @@ export async function lookupFlight(ident: string, fresh = false): Promise<Flight
   }
 
   if (!response.ok) {
-    console.error("FlightAware request failed", response.status, response.headers.get("cf-ray"));
+    const snippet = (await response.text()).slice(0, 500).replace(/\s+/g, " ");
+    console.error(
+      "FlightAware request failed",
+      response.status,
+      response.headers.get("cf-ray"),
+      response.headers.get("content-type"),
+      snippet,
+    );
     throw new Error("FlightAware didn't respond. Try again in a moment.");
   }
 
